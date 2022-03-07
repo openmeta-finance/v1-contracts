@@ -16,7 +16,7 @@ contract OpenmetaController is AccessControl{
 
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
     bytes32 public constant SETTLE_ROLE = keccak256("SETTLE_ROLE");
-    uint256 public constant BASE_ROUND = 1000000;
+    uint256 public constant BASE_ROUND = 10000;
     address public constant ETH_ADDRESS = address(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
 
     address public sigAddress;
@@ -73,7 +73,7 @@ contract OpenmetaController is AccessControl{
     }
 
     function getMaximumFee(uint256 _amount) public view returns(uint256 maximumFee) {
-        maximumFee = _amount * (maxFeeLimit * BASE_ROUND) / 10000 / BASE_ROUND;
+        maximumFee = _amount * maxFeeLimit / BASE_ROUND;
     }
 
     function checkFeeAmount(
@@ -81,12 +81,12 @@ contract OpenmetaController is AccessControl{
         uint256 _authorProtocolFee
     ) external view returns(uint256 txAmount, uint256 totalFee, uint256 txFee, uint256 authorFee) {
         if (_authorProtocolFee > 0) {
-            authorFee = _amount * (_authorProtocolFee * BASE_ROUND) / 10000 / BASE_ROUND;
+            authorFee = _amount * _authorProtocolFee / BASE_ROUND;
         }
 
         bool feeOn = feeTo != address(0);
         if (feeOn && feeRate > 0) {
-            txFee = _amount * (feeRate * BASE_ROUND) / 10000 / BASE_ROUND;
+            txFee = _amount * feeRate / BASE_ROUND;
         }
 
         totalFee = authorFee + txFee;
@@ -113,29 +113,26 @@ contract OpenmetaController is AccessControl{
         sigAddress = _sigAddress;
     }
 
-    function settlePayment(address _paymentToken, string memory _symbol) public onlyRole(SETTLE_ROLE) {
-        SupportPayment storage payment = supportPayments[_paymentToken];
-        require(payment.token == address(0), "payment token already exist");
-
-        payment.token = _paymentToken;
-        payment.symbol = _symbol;
-        payment.status = true;
-    }
-
     function batchSettlePayment(address[] memory _paymentTokens, string[] memory _paymentSymbols) external onlyRole(SETTLE_ROLE) {
-        for (uint256 i = 0; i < _paymentTokens.length; i++) {
-            settlePayment(_paymentTokens[i], _paymentSymbols[i]);
-        }
-    }
+        require(_paymentTokens.length == _paymentSymbols.length, "not equal length");
 
-    function removePayment(address _paymentToken) public onlyRole(SETTLE_ROLE) {
-        require(supportPayments[_paymentToken].token != address(0), "payment token does not exist");
-        delete supportPayments[_paymentToken];
+        for (uint256 i = 0; i < _paymentTokens.length; i++) {
+            SupportPayment storage payment = supportPayments[_paymentTokens[i]];
+            require(payment.token == address(0), "payment token already exist");
+
+            payment.token = _paymentTokens[i];
+            payment.symbol = _paymentSymbols[i];
+            payment.status = true;
+        }
     }
 
     function batchRemovePayment(address[] memory _paymentTokens) external onlyRole(SETTLE_ROLE) {
         for (uint256 i = 0; i < _paymentTokens.length; i++) {
-            removePayment(_paymentTokens[i]);
+            require(
+                supportPayments[_paymentTokens[i]].token != address(0), 
+                "payment token does not exist"
+            );
+            delete supportPayments[_paymentTokens[i]];
         }
     }
 
@@ -148,6 +145,10 @@ contract OpenmetaController is AccessControl{
     }
 
     function setMaxFeeLimit(uint256 _maxFeeLimit) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(
+            _maxFeeLimit >= feeRate && _maxFeeLimit < BASE_ROUND, 
+            "verification fee limit failed"
+        );
         maxFeeLimit = _maxFeeLimit;
     }
 

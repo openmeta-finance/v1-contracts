@@ -22,8 +22,8 @@ abstract contract TradeModel is EIP712{
         "DealOrder(bytes32 makerOrderHash,address taker,address author,uint256 dealAmount,uint256 rewardAmount,uint256 salt,bool minted,uint256 deadline,uint256 createTime,bytes takerSig)"
     );
 
-    enum TokenType{ TYPE_BASE, TYPE_ERC721, TYPE_ERC1155 }
-    enum SaleType{ TYPE_BASE, TYPE_MARKET, TYPE_AUCTION }
+    enum TokenType{ TYPE_BASE, TYPE_ERC721, TYPE_ERC1155 }  /// Unused type: TYPE_BASE
+    enum SaleType{ TYPE_BASE, TYPE_MARKET, TYPE_AUCTION }   // Unused type: TYPE_BASE, TYPE_MARKET
 
     struct NftInfo {
         address nftToken;           // The NFT contract address of the transaction
@@ -150,6 +150,9 @@ abstract contract TradeModel is EIP712{
 
 contract OpenmetaTrade is Validation, TradeModel {
     IOpenmetaController public controller;
+    address public feeRewardToken;
+    mapping (address => uint256) public feeReturns;
+    mapping (bytes32 => bool) public dealOrders;
 
     modifier checkOrderCaller( MakerOrder memory _makerOrder, DealOrder memory _dealOrder) {
         if (_makerOrder.saleType == SaleType.TYPE_AUCTION) {
@@ -170,9 +173,11 @@ contract OpenmetaTrade is Validation, TradeModel {
         uint256 totalFee, 
         bool orderRes
     );
+    event Claim(address indexed user, uint256 amount);
 
-    constructor(address _controller) EIP712("Openmeta NFT Trade", "2.0.0") {
+    constructor(address _controller, address _rewardToken) EIP712("Openmeta NFT Trade", "2.0.0") {
         controller = IOpenmetaController(_controller);
+        feeRewardToken = _rewardToken;
     }
 
     function performOrder(NftInfo memory _nftInfo, MakerOrder memory _makerOrder, DealOrder memory _dealOrder) 
@@ -182,18 +187,26 @@ contract OpenmetaTrade is Validation, TradeModel {
         external 
         returns(bytes32 dealOrderHash, uint256 totalFee) 
     {
-        require(controller.isSupportPayment(_makerOrder.paymentToken), "not support payment token");
+        require(
+            controller.isSupportPayment(_makerOrder.paymentToken), 
+            "not support payment token"
+        );
+
+        uint256 dealAmount = _makerOrder.price * _makerOrder.quantity;
+        require(dealAmount >= _dealOrder.dealAmount, "order deal amount verification failed");
 
         dealOrderHash = getOrderHashBySig(_nftInfo, _makerOrder, _dealOrder, controller);
-        bool isOriginToken = controller.isOriginToken(_makerOrder.paymentToken);
+        require(!dealOrders[dealOrderHash], "deal order has been completed");
 
         /// When the order type is auction, check whether the conditions are met. 
         /// If not, the transfer will not be processed and the event flag will be false
         bool processRes = true;
+        bool isOriginToken = controller.isOriginToken(_makerOrder.paymentToken);
         if (_makerOrder.saleType == SaleType.TYPE_AUCTION) {
-            (uint256 nftBalance, uint256 amountBalance) = getOrderUserBalance(_nftInfo, _makerOrder, _dealOrder.taker, isOriginToken);
+            require(!isOriginToken, "auctions do not support chain-based coins");
 
-            if (nftBalance < _makerOrder.quantity || amountBalance < _dealOrder.dealAmount) {
+            (uint256 nftBalance, uint256 amountBalance) = getOrderUserBalance(_nftInfo, _makerOrder, _dealOrder.taker, isOriginToken);
+            if ((_dealOrder.minted && nftBalance < _makerOrder.quantity) || amountBalance < _dealOrder.dealAmount) {
                 processRes = false;
             }
         }
@@ -203,6 +216,7 @@ contract OpenmetaTrade is Validation, TradeModel {
             totalFee = _transferForTakeFee(_nftInfo, _makerOrder, _dealOrder, isOriginToken);
         }
 
+        dealOrders[dealOrderHash] = true;
         emit PerformOrder(
             _dealOrder.makerOrderHash,
             dealOrderHash,
@@ -213,6 +227,21 @@ contract OpenmetaTrade is Validation, TradeModel {
             totalFee,
             processRes
         );
+    }
+
+    /// ### Transaction fee refund ###
+    /// Takers can get transaction fee rebates by holding MDX Token
+    function claim() external {
+        uint256 amount = feeReturns[msg.sender];
+        require(amount > 0, "insufficient reward");
+
+        uint256 balance = IERC20(feeRewardToken).balanceOf(address(this));
+        require(balance >= amount, "insufficient balance");
+
+        TransferHelper.safeTransfer(feeRewardToken, msg.sender, amount);
+        feeReturns[msg.sender] = feeReturns[msg.sender] - amount;
+
+        emit Claim(msg.sender, amount);
     }
 
     function setController(address _controller) external {
@@ -272,16 +301,16 @@ contract OpenmetaTrade is Validation, TradeModel {
                 TransferHelper.safeTransferETH(_dealOrder.author, authorFee);
             }
         } else {
-            TransferHelper.safeTransferFrom(_makerOrder.paymentToken, msg.sender, _makerOrder.maker, amount);
+            TransferHelper.safeTransferFrom(_makerOrder.paymentToken, _dealOrder.taker, _makerOrder.maker, amount);
 
             if (txFee > 0) {
                 require(feeTo != address(0), "zero fee address");
-                TransferHelper.safeTransferFrom(_makerOrder.paymentToken, msg.sender, feeTo, txFee);
+                TransferHelper.safeTransferFrom(_makerOrder.paymentToken, _dealOrder.taker, feeTo, txFee);
             }
 
             if (authorFee > 0) {
                 require(_dealOrder.author != address(0), "zero author address");
-                TransferHelper.safeTransferFrom(_makerOrder.paymentToken, msg.sender, _dealOrder.author, authorFee);
+                TransferHelper.safeTransferFrom(_makerOrder.paymentToken, _dealOrder.taker, _dealOrder.author, authorFee);
             }
         }
         
@@ -312,6 +341,8 @@ contract OpenmetaTrade is Validation, TradeModel {
                 1
             );
         }
+
+        feeReturns[_dealOrder.taker] = feeReturns[_dealOrder.taker] + _dealOrder.rewardAmount;
 
         return totalFee;
     }
