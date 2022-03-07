@@ -16,7 +16,7 @@ abstract contract TradeModel is EIP712{
         "MakerOrder(bytes32 nftTokenHash,address maker,uint256 price,uint256 quantity,address paymentToken,uint256 authorProtocolFee,uint8 saleType,uint256 startTime,uint256 endTime,uint256 createTime,uint256 cancelTime)"
     );
     bytes32 public constant TAKER_ORDER_TYPEHASH    =   keccak256(
-        "DealOrder(bytes32 makerOrderHash,address taker,address author,uint256 dealAmount,uint256 rewardAmount,uint256 salt,bool minted,uint256 deadline,uint256 createTime)"
+        "TakerOrder(bytes32 makerOrderHash,address taker,address author,uint256 dealAmount,uint256 rewardAmount,uint256 salt,bool minted,uint256 deadline,uint256 createTime)"
     );
     bytes32 public constant DEAL_ORDER_TYPEHASH    =   keccak256(
         "DealOrder(bytes32 makerOrderHash,address taker,address author,uint256 dealAmount,uint256 rewardAmount,uint256 salt,bool minted,uint256 deadline,uint256 createTime,bytes takerSig)"
@@ -67,7 +67,7 @@ abstract contract TradeModel is EIP712{
         MakerOrder memory _makerOrder, 
         DealOrder memory _dealOrder, 
         IOpenmetaController _controller
-    ) view internal returns(bytes32 dealOrderHash) {
+    ) internal view returns(bytes32 dealOrderHash) {
         bytes32 makerOrderHash = _makerOrderSig(_nftInfo, _makerOrder);
         require(makerOrderHash == _dealOrder.makerOrderHash, "maker order hash does not match");
 
@@ -75,7 +75,7 @@ abstract contract TradeModel is EIP712{
         dealOrderHash = _dealOrderSig(_dealOrder, _controller);
     }
 
-    function _makerOrderSig(NftInfo memory _nftInfo, MakerOrder memory _order) view private returns(bytes32 makerOrderHash) {
+    function _makerOrderSig(NftInfo memory _nftInfo, MakerOrder memory _order) private view returns(bytes32 makerOrderHash) {
         bytes32 nftTokenHash = keccak256(abi.encodePacked(
             _nftInfo.nftToken, 
             _nftInfo.tokenId, 
@@ -104,7 +104,7 @@ abstract contract TradeModel is EIP712{
         require(signer == _order.maker, "Failed to verify maker signature");
     }
 
-    function _takerOrderSig(DealOrder memory _order) view private {
+    function _takerOrderSig(DealOrder memory _order) private view {
         bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(
             TAKER_ORDER_TYPEHASH,
             _order.makerOrderHash,
@@ -125,7 +125,7 @@ abstract contract TradeModel is EIP712{
     function _dealOrderSig(
         DealOrder memory _order, 
         IOpenmetaController _controller
-    ) view private returns(bytes32 dealOrderHash) {
+    ) private view returns(bytes32 dealOrderHash) {
         dealOrderHash = _hashTypedDataV4(keccak256(abi.encode(
             DEAL_ORDER_TYPEHASH,
             _order.makerOrderHash,
@@ -181,10 +181,10 @@ contract OpenmetaTrade is Validation, TradeModel {
     }
 
     function performOrder(NftInfo memory _nftInfo, MakerOrder memory _makerOrder, DealOrder memory _dealOrder) 
+        external
         payable 
         checkOrderCaller(_makerOrder, _dealOrder) 
-        checkDeadline(_dealOrder.deadline)
-        external 
+        checkDeadline(_dealOrder.deadline) 
         returns(bytes32 dealOrderHash, uint256 totalFee) 
     {
         require(
@@ -193,7 +193,7 @@ contract OpenmetaTrade is Validation, TradeModel {
         );
 
         uint256 dealAmount = _makerOrder.price * _makerOrder.quantity;
-        require(dealAmount >= _dealOrder.dealAmount, "order deal amount verification failed");
+        require(_dealOrder.dealAmount >= dealAmount, "order deal amount verification failed");
 
         dealOrderHash = getOrderHashBySig(_nftInfo, _makerOrder, _dealOrder, controller);
         require(!dealOrders[dealOrderHash], "deal order has been completed");
@@ -238,8 +238,8 @@ contract OpenmetaTrade is Validation, TradeModel {
         uint256 balance = IERC20(feeRewardToken).balanceOf(address(this));
         require(balance >= amount, "insufficient balance");
 
-        TransferHelper.safeTransfer(feeRewardToken, msg.sender, amount);
         feeReturns[msg.sender] = feeReturns[msg.sender] - amount;
+        TransferHelper.safeTransfer(feeRewardToken, msg.sender, amount);
 
         emit Claim(msg.sender, amount);
     }
